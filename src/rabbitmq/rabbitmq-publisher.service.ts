@@ -3,7 +3,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-
+import { randomUUID } from 'crypto';
 import * as amqp from 'amqplib';
 import { Channel, ChannelModel } from 'amqplib';
 
@@ -36,27 +36,41 @@ export class RabbitmqPublisherService
     );
   }
 
-  publish<T>(
-    routingKey: string,
-    payload: T,
-  ) {
-    const message = Buffer.from(
-      JSON.stringify({
-        pattern: routingKey,
-        data: payload,
-      }),
-    );
+publish<T>(
+  eventType: string,
+  data: T,
+) {
+  console.log(
+    '📤 PUBLICANDO EVENTO:',
+    eventType,
+    data,
+  );
 
-    this.channel.publish(
-      this.exchange,
-      routingKey,
-      message,
-      {
-        persistent: true,
-        contentType: 'application/json',
-      },
-    );
-  }
+  const event = {
+    eventId: randomUUID(),
+    eventType,
+    version: 1,
+    occurredAt: new Date().toISOString(),
+    data,
+  };
+
+  const message = Buffer.from(
+    JSON.stringify({
+      pattern: eventType,
+      data: event,
+    }),
+  );
+
+  this.channel.publish(
+    this.exchange,
+    eventType,
+    message,
+    {
+      persistent: true,
+      contentType: 'application/json',
+    },
+  );
+}
 
   async onModuleDestroy() {
     await this.channel?.close();
