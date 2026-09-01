@@ -21,6 +21,19 @@ export class OutboxPublisherService
     NodeJS.Timeout | undefined;
 
 
+  /*
+   * Tiempo máximo que un evento puede
+   * permanecer PROCESSING.
+   *
+   * Después de este tiempo asumimos
+   * que el worker que lo estaba procesando
+   * murió.
+   */
+
+  private readonly processingTimeoutMs =
+    60_000;
+
+
   constructor(
     private readonly prisma:
       PrismaService,
@@ -30,6 +43,12 @@ export class OutboxPublisherService
   ) {}
 
 
+  /*
+   * =====================================================
+   * MODULE INIT
+   * =====================================================
+   */
+
   async onModuleInit() {
 
     console.log(
@@ -38,7 +57,15 @@ export class OutboxPublisherService
 
 
     /*
-     * Intentamos procesar inmediatamente
+     * Primero recuperamos eventos
+     * PROCESSING abandonados.
+     */
+
+    await this.recoverStuckEvents();
+
+
+    /*
+     * Intentamos publicar inmediatamente
      * los eventos pendientes.
      */
 
@@ -47,13 +74,13 @@ export class OutboxPublisherService
 
     /*
      * Después ejecutamos el worker
-     * periódicamente.
+     * cada 5 segundos.
      */
 
     this.interval =
       setInterval(
         () => {
-          void this.publishPendingEvents();
+          void this.runWorker();
         },
 
         5000,
@@ -63,7 +90,106 @@ export class OutboxPublisherService
 
   /*
    * =====================================================
-   * OUTBOX WORKER
+   * WORKER
+   * =====================================================
+   */
+
+  private async runWorker() {
+
+    try {
+
+      /*
+       * Primero recuperamos eventos
+       * PROCESSING demasiado antiguos.
+       */
+
+      await this.recoverStuckEvents();
+
+
+      /*
+       * Después intentamos procesar
+       * nuevos eventos.
+       */
+
+      await this.publishPendingEvents();
+
+    } catch (error) {
+
+      console.error(
+        '❌ Error ejecutando Outbox Worker:',
+        error,
+      );
+    }
+  }
+
+
+  /*
+   * =====================================================
+   * RECUPERAR EVENTOS ABANDONADOS
+   * =====================================================
+   *
+   * Busca eventos que quedaron PROCESSING
+   * durante demasiado tiempo.
+   */
+
+  private async recoverStuckEvents() {
+
+    const timeout =
+      new Date(
+        Date.now() -
+          this.processingTimeoutMs,
+      );
+
+
+    try {
+
+      const result =
+        await this.prisma.outboxEvent.updateMany({
+
+          where: {
+
+            status:
+              'PROCESSING',
+
+            processingAt: {
+              lt:
+                timeout,
+            },
+          },
+
+          data: {
+
+            status:
+              'PENDING',
+
+            processingAt:
+              null,
+          },
+        });
+
+
+      if (
+        result.count > 0
+      ) {
+
+        console.log(
+          `♻️ Recuperados ${result.count} eventos PROCESSING`,
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        '❌ Error recuperando eventos PROCESSING:',
+        error,
+      );
+    }
+  }
+
+
+  /*
+   * =====================================================
+   * PUBLICAR EVENTOS PENDING
    * =====================================================
    */
 
@@ -73,15 +199,15 @@ export class OutboxPublisherService
 
       /*
        * =================================================
-       * 1. CLAIM DE EVENTOS
+       * 1. CLAIM
        * =================================================
        *
-       * Acá usamos:
+       * Buscamos eventos PENDING utilizando
        *
        * FOR UPDATE SKIP LOCKED
        *
-       * para que múltiples workers
-       * no tomen los mismos eventos.
+       * para evitar que dos workers
+       * tomen los mismos eventos.
        */
 
       const events =
@@ -116,6 +242,7 @@ export class OutboxPublisherService
             if (
               events.length === 0
             ) {
+
               return [];
             }
 
@@ -126,26 +253,33 @@ export class OutboxPublisherService
 
 
             /*
-             * Marcamos los eventos como PROCESSING.
+             * Marcamos los eventos como
+             * PROCESSING.
              *
-             * Esto sucede dentro de la misma
-             * transaction.
+             * También guardamos cuándo
+             * comenzó el procesamiento.
              */
 
             await tx.outboxEvent.updateMany({
 
               where: {
+
                 id: {
-                  in: events.map(
-                    (event) =>
-                      event.id,
-                  ),
+                  in:
+                    events.map(
+                      (event) =>
+                        event.id,
+                    ),
                 },
               },
 
               data: {
+
                 status:
                   'PROCESSING',
+
+                processingAt:
+                  new Date(),
               },
             });
 
@@ -153,8 +287,8 @@ export class OutboxPublisherService
             /*
              * COMMIT.
              *
-             * A partir de acá los locks
-             * de PostgreSQL se liberan.
+             * Los locks de PostgreSQL
+             * se liberan acá.
              */
 
             return events;
@@ -162,14 +296,10 @@ export class OutboxPublisherService
         );
 
 
-      /*
-       * Si no encontramos eventos,
-       * terminamos este ciclo.
-       */
-
       if (
         events.length === 0
       ) {
+
         return;
       }
 
@@ -188,19 +318,22 @@ export class OutboxPublisherService
 
           console.log(
             '📤 Publicando Outbox:',
+
             event.eventType,
+
             event.eventId,
           );
 
 
           /*
-           * Esperamos confirmación
-           * de RabbitMQ.
+           * Publicamos y esperamos
+           * confirmación de RabbitMQ.
            */
 
           await this.rabbitmqPublisher
             .publishRaw(
               event.eventType,
+
               event.payload,
             );
 
@@ -214,6 +347,7 @@ export class OutboxPublisherService
           await this.prisma.outboxEvent.update({
 
             where: {
+
               id:
                 event.id,
             },
@@ -225,12 +359,16 @@ export class OutboxPublisherService
 
               publishedAt:
                 new Date(),
+
+              processingAt:
+                null,
             },
           });
 
 
           console.log(
             '✅ Outbox marcado como PUBLISHED:',
+
             event.eventId,
           );
 
@@ -239,7 +377,9 @@ export class OutboxPublisherService
 
           console.error(
             '❌ Error publicando Outbox:',
+
             event.eventId,
+
             error,
           );
 
@@ -249,14 +389,14 @@ export class OutboxPublisherService
            * 4. VOLVER A PENDING
            * =================================================
            *
-           * Si RabbitMQ falló:
+           * Si RabbitMQ falla:
            *
            * PROCESSING
-           *       ↓
+           *      ↓
            * PENDING
            *
-           * El próximo ciclo lo intentará
-           * nuevamente.
+           * El próximo ciclo volverá
+           * a intentarlo.
            */
 
           try {
@@ -264,15 +404,21 @@ export class OutboxPublisherService
             await this.prisma.outboxEvent.update({
 
               where: {
+
                 id:
                   event.id,
               },
 
               data: {
+
                 status:
                   'PENDING',
+
+                processingAt:
+                  null,
               },
             });
+
 
           } catch (
             updateError
@@ -280,7 +426,9 @@ export class OutboxPublisherService
 
             console.error(
               '❌ No se pudo volver a PENDING:',
+
               event.eventId,
+
               updateError,
             );
           }
@@ -290,18 +438,26 @@ export class OutboxPublisherService
     } catch (error) {
 
       console.error(
-        '❌ Error ejecutando Outbox Worker:',
+        '❌ Error leyendo Outbox:',
+
         error,
       );
     }
   }
 
 
+  /*
+   * =====================================================
+   * MODULE DESTROY
+   * =====================================================
+   */
+
   async onModuleDestroy() {
 
     if (
       this.interval
     ) {
+
       clearInterval(
         this.interval,
       );

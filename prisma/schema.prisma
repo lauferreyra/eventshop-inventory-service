@@ -42,13 +42,14 @@ enum ReservationStatus {
 }
 
 model OutboxEvent {
-  id          String    @id @default(uuid())
-  eventId     String    @unique
-  eventType   String
-  payload     Json
-  status      OutboxStatus @default(PENDING)
-  createdAt   DateTime  @default(now())
-  publishedAt DateTime?
+  id           String       @id @default(uuid())
+  eventId      String       @unique
+  eventType    String
+  payload      Json
+  status       OutboxStatus @default(PENDING)
+  createdAt    DateTime     @default(now())
+  processingAt DateTime?
+  publishedAt  DateTime?
 
   @@map("outbox_events")
 }
