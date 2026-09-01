@@ -40,3 +40,29 @@ enum ReservationStatus {
   RESERVED
   RELEASED
 }
+
+model OutboxEvent {
+  id          String    @id @default(uuid())
+  eventId     String    @unique
+  eventType   String
+  payload     Json
+  status      OutboxStatus @default(PENDING)
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+
+  @@map("outbox_events")
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+}
+
+model ProcessedEvent {
+  id        String   @id @default(uuid())
+  eventId   String   @unique
+  eventType String
+  createdAt DateTime @default(now())
+
+  @@map("processed_events")
+}

@@ -9,34 +9,60 @@ import {
 
 import { PrismaService } from './prisma/prisma.service.js';
 
-import { RabbitmqPublisherService } from './rabbitmq/rabbitmq-publisher.service.js';
+import {
+  RabbitmqPublisherService,
+} from './rabbitmq/rabbitmq-publisher.service.js';
 
-type OrderCreatedEvent = {
-  id: string;
-  eventName: string;
-  email: string;
-  quantity: number;
-  status: string;
-};
+import type {
+  OrderCreatedEnvelope,
+} from './events/events.js';
+
+
+/*
+ * =====================================================
+ * DATABASE EVENT
+ * =====================================================
+ */
 
 type EventRow = {
   id: string;
+
   name: string;
+
   unitPrice: number;
+
   stock: number;
 };
+
+
+/*
+ * =====================================================
+ * TRANSACTION RESULT
+ * =====================================================
+ */
 
 type ReservationResult =
   | {
       success: true;
-      event: EventRow;
+
+      duplicate: true;
+    }
+  | {
+      success: true;
+
+      duplicate: false;
+
       reservationId: string;
-      unitPrice: number;
+
+      event: EventRow;
     }
   | {
       success: false;
-      reason: 'INSUFFICIENT_STOCK';
+
+      reason:
+        | 'INSUFFICIENT_STOCK';
     };
+
 
 @Controller()
 export class AppController {
@@ -48,10 +74,17 @@ export class AppController {
       RabbitmqPublisherService,
   ) {}
 
+
+  /*
+   * =====================================================
+   * ORDER.CREATED
+   * =====================================================
+   */
+
   @EventPattern('order.created')
   async handleOrderCreated(
     @Payload()
-    order: OrderCreatedEvent,
+    event: OrderCreatedEnvelope,
 
     @Ctx()
     context: any,
@@ -65,32 +98,95 @@ export class AppController {
     const message =
       rmqContext.getMessage();
 
+
     try {
+      /*
+       * =================================================
+       * EVENT RECIBIDO
+       * =================================================
+       */
+
       console.log(
         '📦 Inventory recibió order.created',
       );
 
-      console.log(order);
+      console.log(
+        JSON.stringify(
+          event,
+          null,
+          2,
+        ),
+      );
+
 
       /*
-       * =====================================================
-       * TRANSACTION
-       * =====================================================
-       *
-       * Todo lo que hacemos dentro de esta función
-       * pertenece a la misma transaction.
+       * =================================================
+       * DATOS DEL EVENTO
+       * =================================================
        */
-      const result: ReservationResult =
+
+      const order =
+        event.data;
+
+
+      /*
+       * =================================================
+       * TRANSACTION
+       * =================================================
+       */
+
+      const result:
+        ReservationResult =
         await this.prisma.$transaction(
           async (tx) => {
+
+
             /*
-             * =================================================
-             * 1. BUSCAR EVENTO + BLOQUEAR FILA
-             * =================================================
+             * =============================================
+             * 1. IDEMPOTENCIA
+             * =============================================
              *
-             * FOR UPDATE bloquea la fila hasta que
-             * termine la transaction.
+             * Usamos event.eventId.
+             *
+             * NO usamos order.id.
              */
+
+            const processedEvent =
+              await tx.processedEvent.findUnique({
+                where: {
+                  eventId:
+                    event.eventId,
+                },
+              });
+
+
+            /*
+             * Si ya existe significa que RabbitMQ
+             * nos entregó nuevamente el mismo evento.
+             */
+
+            if (
+              processedEvent
+            ) {
+              console.log(
+                '♻️ Evento ya procesado:',
+                event.eventId,
+              );
+
+              return {
+                success: true,
+
+                duplicate: true,
+              };
+            }
+
+
+            /*
+             * =============================================
+             * 2. BUSCAR EVENTO + FOR UPDATE
+             * =============================================
+             */
+
             const events =
               await tx.$queryRaw<EventRow[]>`
                 SELECT
@@ -103,60 +199,83 @@ export class AppController {
                 FOR UPDATE
               `;
 
+
             /*
              * El evento no existe.
              */
-            if (events.length === 0) {
+
+            if (
+              events.length === 0
+            ) {
               throw new Error(
                 `Evento no encontrado: ${order.eventName}`,
               );
             }
 
-            const event =
+
+            const inventoryEvent =
               events[0];
+
 
             console.log(
               '🎫 Evento encontrado:',
-              event,
+              inventoryEvent,
             );
 
+
             /*
-             * =================================================
-             * 2. VERIFICAR STOCK
-             * =================================================
+             * =============================================
+             * 3. VERIFICAR STOCK
+             * =============================================
              */
+
             if (
-              event.stock <
+              inventoryEvent.stock <
               order.quantity
             ) {
               console.log(
                 '❌ Stock insuficiente',
               );
 
+
               /*
-               * IMPORTANTE:
+               * Registramos el evento como procesado.
                *
-               * No modificamos nada.
-               *
-               * La transaction simplemente termina
-               * sin hacer cambios.
+               * Así no procesamos nuevamente
+               * el mismo order.created.
                */
+
+              await tx.processedEvent.create({
+                data: {
+                  eventId:
+                    event.eventId,
+
+                  eventType:
+                    event.eventType,
+                },
+              });
+
+
               return {
                 success: false,
+
                 reason:
                   'INSUFFICIENT_STOCK',
               };
             }
 
+
             /*
-             * =================================================
-             * 3. DESCONTAR STOCK
-             * =================================================
+             * =============================================
+             * 4. DESCONTAR STOCK
+             * =============================================
              */
+
             const updatedEvent =
               await tx.event.update({
                 where: {
-                  id: event.id,
+                  id:
+                    inventoryEvent.id,
                 },
 
                 data: {
@@ -167,16 +286,19 @@ export class AppController {
                 },
               });
 
+
             console.log(
               '📦 Stock actualizado:',
               updatedEvent.stock,
             );
 
+
             /*
-             * =================================================
-             * 4. CREAR RESERVA
-             * =================================================
+             * =============================================
+             * 5. CREAR RESERVATION
+             * =============================================
              */
+
             const reservation =
               await tx.reservation.create({
                 data: {
@@ -184,7 +306,7 @@ export class AppController {
                     order.id,
 
                   eventId:
-                    event.id,
+                    inventoryEvent.id,
 
                   quantity:
                     order.quantity,
@@ -194,49 +316,178 @@ export class AppController {
                 },
               });
 
+
             console.log(
               '🎟️ Reserva creada:',
               reservation.id,
             );
 
+
             /*
-             * Devolvemos solamente los datos
-             * que necesitamos después del COMMIT.
+             * =============================================
+             * 6. REGISTRAR PROCESSED EVENT
+             * =============================================
              */
+
+            await tx.processedEvent.create({
+              data: {
+                eventId:
+                  event.eventId,
+
+                eventType:
+                  event.eventType,
+              },
+            });
+
+
+            /*
+             * =============================================
+             * 7. CREAR OUTBOX EVENT
+             * =============================================
+             */
+
+            const outboxEventId =
+              crypto.randomUUID();
+
+
+            /*
+             * Creamos el envelope COMPLETO.
+             *
+             * Este es el evento que eventualmente
+             * viajará por RabbitMQ.
+             */
+
+            const inventoryReservedEvent = {
+              eventId:
+                outboxEventId,
+
+              eventType:
+                'inventory.reserved',
+
+              version: 1,
+
+              occurredAt:
+                new Date().toISOString(),
+
+              data: {
+                orderId:
+                  order.id,
+
+                quantity:
+                  order.quantity,
+
+                unitPrice:
+                  Number(
+                    inventoryEvent.unitPrice,
+                  ),
+              },
+            };
+
+
+            await tx.outboxEvent.create({
+              data: {
+                eventId:
+                  outboxEventId,
+
+                eventType:
+                  'inventory.reserved',
+
+                payload:
+                  inventoryReservedEvent,
+
+                status:
+                  'PENDING',
+              },
+            });
+
+
+            console.log(
+              '📦 OutboxEvent creado:',
+              outboxEventId,
+            );
+
+
+            /*
+             * =============================================
+             * TRANSACTION OK
+             * =============================================
+             *
+             * Al salir de esta función Prisma
+             * hará COMMIT.
+             */
+
             return {
               success: true,
 
-              event,
+              duplicate: false,
 
               reservationId:
                 reservation.id,
 
-              unitPrice:
-                Number(event.unitPrice),
+              event:
+                inventoryEvent,
             };
           },
         );
 
+
       /*
        * =====================================================
-       * TRANSACTION TERMINÓ
+       * TRANSACTION COMMIT
        * =====================================================
-       *
-       * Si llegamos acá sin excepción,
-       * Prisma hizo COMMIT.
        */
+
       console.log(
         '✅ Transaction de Inventory COMMIT',
       );
+
+
+      /*
+       * =====================================================
+       * DUPLICADO
+       * =====================================================
+       */
+
+      if (
+        result.success &&
+        result.duplicate
+      ) {
+        console.log(
+          '♻️ order.created duplicado. ACK.',
+        );
+
+        channel.ack(
+          message,
+        );
+
+        return;
+      }
+
 
       /*
        * =====================================================
        * STOCK INSUFICIENTE
        * =====================================================
        */
-      if (!result.success) {
+
+      if (
+        !result.success
+      ) {
+        console.log(
+          '❌ Publicando inventory.rejected',
+        );
+
+
+        /*
+         * TEMPORALMENTE lo publicamos directamente.
+         *
+         * Más adelante también lo pasaremos
+         * por Outbox.
+         */
+
         this.rabbitmqPublisher.publish(
           'inventory.rejected',
+
           {
             orderId:
               order.id,
@@ -249,71 +500,65 @@ export class AppController {
           },
         );
 
-        channel.ack(message);
+
+        channel.ack(
+          message,
+        );
 
         return;
       }
 
+
       /*
        * =====================================================
-       * RESERVA CONFIRMADA
+       * RESERVA EXITOSA
        * =====================================================
        *
-       * Como result.success === true,
-       * TypeScript sabe que:
-       *
-       * result.unitPrice
-       * result.reservationId
-       * result.event
-       *
-       * existen.
+       * inventory.reserved YA está guardado
+       * en outbox_events.
        */
+
       console.log(
-        '✅ Reserva confirmada:',
+        '🎟️ Reserva confirmada:',
         result.reservationId,
       );
 
+
       /*
-       * Publicamos inventory.reserved
-       * DESPUÉS del COMMIT.
+       * ACK del order.created.
        */
-      this.rabbitmqPublisher.publish(
-        'inventory.reserved',
-        {
-          orderId:
-            order.id,
 
-          quantity:
-            order.quantity,
-
-          unitPrice:
-            result.unitPrice,
-        },
+      channel.ack(
+        message,
       );
 
-      /*
-       * ACK después de completar
-       * nuestra operación.
-       */
-      channel.ack(message);
+
     } catch (error) {
+
       console.error(
         '❌ Error procesando inventory',
         error,
       );
 
+
       /*
-       * Si la transaction falla:
+       * Si algo falla dentro de la transaction:
        *
-       * - Prisma hace ROLLBACK
-       * - no queda stock descontado
-       * - no queda reservation creada
+       * ROLLBACK.
        *
-       * RabbitMQ recibe NACK.
+       * No queda:
+       *
+       * - stock descontado
+       * - Reservation
+       * - ProcessedEvent
+       * - OutboxEvent
        */
+
       channel.nack(
         message,
+
         false,
+
         false,
       );
     }
