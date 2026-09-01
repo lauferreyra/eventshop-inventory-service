@@ -13,63 +13,82 @@ import {
 
 import { randomUUID } from 'crypto';
 
+
 @Injectable()
 export class RabbitmqPublisherService
-  implements OnModuleInit, OnModuleDestroy
+  implements
+    OnModuleInit,
+    OnModuleDestroy
 {
-  private connection: ChannelModel;
+  private connection:
+    ChannelModel;
 
-  private channel: ConfirmChannel;
+  private channel:
+    ConfirmChannel;
 
   private readonly exchange =
     'eventshop.events';
 
+
   async onModuleInit() {
+
     this.connection =
       await amqp.connect(
         'amqp://admin:admin@localhost:5672',
       );
 
+
     /*
-     * Usamos ConfirmChannel porque necesitamos
-     * saber si RabbitMQ confirmó la publicación.
+     * ConfirmChannel nos permite saber
+     * si RabbitMQ confirmó la publicación.
      */
+
     this.channel =
-      await this.connection.createConfirmChannel();
+      await this.connection
+        .createConfirmChannel();
+
 
     await this.channel.assertExchange(
       this.exchange,
+
       'topic',
+
       {
         durable: true,
       },
     );
+
 
     console.log(
       '✅ Inventory Publisher conectado a RabbitMQ',
     );
   }
 
+
   /*
    * =====================================================
    * PUBLICACIÓN NORMAL
    * =====================================================
    *
-   * La seguimos utilizando temporalmente para
-   * inventory.rejected.
+   * Actualmente queda para compatibilidad.
    *
-   * Más adelante también la eliminaremos y
-   * pasaremos ese evento por Outbox.
+   * Los eventos importantes de Inventory
+   * ya salen mediante Outbox.
    */
+
   publish<T>(
     eventType: string,
+
     data: T,
   ) {
+
     console.log(
       '📤 PUBLICANDO EVENTO:',
       eventType,
+
       data,
     );
+
 
     const event = {
       eventId:
@@ -85,26 +104,26 @@ export class RabbitmqPublisherService
       data,
     };
 
-    /*
-     * NestJS necesita recibir:
-     *
-     * {
-     *   pattern: 'inventory.reserved',
-     *   data: {...}
-     * }
-     */
+
     const message =
       Buffer.from(
         JSON.stringify({
-          pattern: eventType,
-          data: event,
+          pattern:
+            eventType,
+
+          data:
+            event,
         }),
       );
 
+
     this.channel.publish(
       this.exchange,
+
       eventType,
+
       message,
+
       {
         persistent: true,
 
@@ -114,37 +133,48 @@ export class RabbitmqPublisherService
     );
   }
 
+
   /*
    * =====================================================
    * PUBLICACIÓN DESDE OUTBOX
    * =====================================================
-   *
-   * El Outbox ya tiene generado su eventId.
-   *
-   * Por eso NO generamos un nuevo envelope acá.
    */
+
   publishRaw(
     eventType: string,
+
     payload: unknown,
   ): Promise<void> {
+
     console.log(
       '📤 Outbox publicando:',
       eventType,
     );
 
-    const message = {
-      pattern: eventType,
 
-      data: payload,
+    const message = {
+      pattern:
+        eventType,
+
+      data:
+        payload,
     };
+
 
     const buffer =
       Buffer.from(
-        JSON.stringify(message),
+        JSON.stringify(
+          message,
+        ),
       );
 
+
     return new Promise(
-      (resolve, reject) => {
+      (
+        resolve,
+        reject,
+      ) => {
+
         this.channel.publish(
           this.exchange,
 
@@ -159,29 +189,38 @@ export class RabbitmqPublisherService
               'application/json',
           },
 
+
           /*
-           * ConfirmChannel ejecuta este callback
-           * cuando RabbitMQ confirma o rechaza
-           * la publicación.
+           * Confirmación de RabbitMQ.
            */
+
           (error) => {
+
             if (error) {
+
               console.error(
                 '❌ RabbitMQ rechazó el mensaje:',
+
                 eventType,
 
                 error,
               );
 
-              reject(error);
+
+              reject(
+                error,
+              );
 
               return;
             }
 
+
             console.log(
               '✅ RabbitMQ confirmó:',
+
               eventType,
             );
+
 
             resolve();
           },
@@ -190,7 +229,9 @@ export class RabbitmqPublisherService
     );
   }
 
+
   async onModuleDestroy() {
+
     await this.channel?.close();
 
     await this.connection?.close();

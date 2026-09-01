@@ -1,16 +1,26 @@
 import {
   Injectable,
+  OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service.js';
 
-import { RabbitmqPublisherService } from '../rabbitmq/rabbitmq-publisher.service.js';
+import {
+  RabbitmqPublisherService,
+} from '../rabbitmq/rabbitmq-publisher.service.js';
+
 
 @Injectable()
 export class OutboxPublisherService
-  implements OnModuleInit
+  implements
+    OnModuleInit,
+    OnModuleDestroy
 {
+  private interval:
+    NodeJS.Timeout | undefined;
+
+
   constructor(
     private readonly prisma:
       PrismaService,
@@ -19,43 +29,143 @@ export class OutboxPublisherService
       RabbitmqPublisherService,
   ) {}
 
+
   async onModuleInit() {
+
     console.log(
       '📦 Inventory Outbox Publisher iniciado',
     );
 
-    await this.publishPendingEvents();
 
     /*
-     * Después podemos convertir esto
-     * en un worker periódico.
+     * Intentamos procesar inmediatamente
+     * los eventos pendientes.
      */
-    setInterval(
-      () => {
-        this.publishPendingEvents();
-      },
-      5000,
-    );
+
+    await this.publishPendingEvents();
+
+
+    /*
+     * Después ejecutamos el worker
+     * periódicamente.
+     */
+
+    this.interval =
+      setInterval(
+        () => {
+          void this.publishPendingEvents();
+        },
+
+        5000,
+      );
   }
 
+
+  /*
+   * =====================================================
+   * OUTBOX WORKER
+   * =====================================================
+   */
+
   private async publishPendingEvents() {
+
     try {
+
       /*
-       * Buscamos eventos que todavía
-       * no fueron publicados.
+       * =================================================
+       * 1. CLAIM DE EVENTOS
+       * =================================================
+       *
+       * Acá usamos:
+       *
+       * FOR UPDATE SKIP LOCKED
+       *
+       * para que múltiples workers
+       * no tomen los mismos eventos.
        */
+
       const events =
-        await this.prisma.outboxEvent.findMany({
-          where: {
-            status: 'PENDING',
-          },
+        await this.prisma.$transaction(
+          async (tx) => {
 
-          orderBy: {
-            createdAt: 'asc',
-          },
+            const events =
+              await tx.$queryRaw<
+                {
+                  id: string;
 
-          take: 10,
-        });
+                  eventId: string;
+
+                  eventType: string;
+
+                  payload: unknown;
+                }[]
+              >`
+                SELECT
+                  id,
+                  "eventId",
+                  "eventType",
+                  payload
+                FROM outbox_events
+                WHERE status = 'PENDING'
+                ORDER BY "createdAt" ASC
+                LIMIT 10
+                FOR UPDATE SKIP LOCKED
+              `;
+
+
+            if (
+              events.length === 0
+            ) {
+              return [];
+            }
+
+
+            console.log(
+              `🔒 Inventory tomó ${events.length} eventos`,
+            );
+
+
+            /*
+             * Marcamos los eventos como PROCESSING.
+             *
+             * Esto sucede dentro de la misma
+             * transaction.
+             */
+
+            await tx.outboxEvent.updateMany({
+
+              where: {
+                id: {
+                  in: events.map(
+                    (event) =>
+                      event.id,
+                  ),
+                },
+              },
+
+              data: {
+                status:
+                  'PROCESSING',
+              },
+            });
+
+
+            /*
+             * COMMIT.
+             *
+             * A partir de acá los locks
+             * de PostgreSQL se liberan.
+             */
+
+            return events;
+          },
+        );
+
+
+      /*
+       * Si no encontramos eventos,
+       * terminamos este ciclo.
+       */
 
       if (
         events.length === 0
@@ -63,72 +173,137 @@ export class OutboxPublisherService
         return;
       }
 
-      console.log(
-        `📦 Inventory encontró ${events.length} eventos pendientes`,
-      );
 
-      for (const event of events) {
+      /*
+       * =================================================
+       * 2. PUBLICAR FUERA DE LA TRANSACTION
+       * =================================================
+       */
+
+      for (
+        const event of events
+      ) {
+
         try {
+
           console.log(
             '📤 Publicando Outbox:',
             event.eventType,
             event.eventId,
           );
 
-          /*
-           * Esperamos la confirmación de RabbitMQ.
-           */
-          await this.rabbitmqPublisher.publishRaw(
-            event.eventType,
-            event.payload,
-          );
 
           /*
-           * RabbitMQ confirmó.
-           *
-           * Ahora podemos marcar el evento
-           * como PUBLISHED.
+           * Esperamos confirmación
+           * de RabbitMQ.
            */
+
+          await this.rabbitmqPublisher
+            .publishRaw(
+              event.eventType,
+              event.payload,
+            );
+
+
+          /*
+           * =================================================
+           * 3. MARCAR COMO PUBLISHED
+           * =================================================
+           */
+
           await this.prisma.outboxEvent.update({
+
             where: {
-              id: event.id,
+              id:
+                event.id,
             },
 
             data: {
-              status: 'PUBLISHED',
+
+              status:
+                'PUBLISHED',
 
               publishedAt:
                 new Date(),
             },
           });
 
+
           console.log(
             '✅ Outbox marcado como PUBLISHED:',
             event.eventId,
           );
+
+
         } catch (error) {
+
           console.error(
             '❌ Error publicando Outbox:',
             event.eventId,
             error,
           );
 
+
           /*
-           * MUY IMPORTANTE:
+           * =================================================
+           * 4. VOLVER A PENDING
+           * =================================================
            *
-           * No eliminamos el evento.
+           * Si RabbitMQ falló:
            *
-           * Sigue PENDING.
+           * PROCESSING
+           *       ↓
+           * PENDING
            *
-           * En la próxima ejecución
-           * volveremos a intentarlo.
+           * El próximo ciclo lo intentará
+           * nuevamente.
            */
+
+          try {
+
+            await this.prisma.outboxEvent.update({
+
+              where: {
+                id:
+                  event.id,
+              },
+
+              data: {
+                status:
+                  'PENDING',
+              },
+            });
+
+          } catch (
+            updateError
+          ) {
+
+            console.error(
+              '❌ No se pudo volver a PENDING:',
+              event.eventId,
+              updateError,
+            );
+          }
         }
       }
+
     } catch (error) {
+
       console.error(
-        '❌ Error leyendo Outbox:',
+        '❌ Error ejecutando Outbox Worker:',
         error,
+      );
+    }
+  }
+
+
+  async onModuleDestroy() {
+
+    if (
+      this.interval
+    ) {
+      clearInterval(
+        this.interval,
       );
     }
   }

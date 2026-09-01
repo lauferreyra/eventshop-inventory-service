@@ -55,6 +55,7 @@ model OutboxEvent {
 
 enum OutboxStatus {
   PENDING
+  PROCESSING
   PUBLISHED
 }
 

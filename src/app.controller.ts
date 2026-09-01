@@ -9,18 +9,15 @@ import {
 
 import { PrismaService } from './prisma/prisma.service.js';
 
-import {
-  RabbitmqPublisherService,
-} from './rabbitmq/rabbitmq-publisher.service.js';
+import { RabbitmqPublisherService } from './rabbitmq/rabbitmq-publisher.service.js';
 
 import type {
   OrderCreatedEnvelope,
 } from './events/events.js';
 
-
 /*
  * =====================================================
- * DATABASE EVENT
+ * EVENTO DE INVENTORY EN DATABASE
  * =====================================================
  */
 
@@ -37,7 +34,7 @@ type EventRow = {
 
 /*
  * =====================================================
- * TRANSACTION RESULT
+ * RESULTADO DE LA TRANSACTION
  * =====================================================
  */
 
@@ -102,7 +99,7 @@ export class AppController {
     try {
       /*
        * =================================================
-       * EVENT RECIBIDO
+       * EVENTO RECIBIDO
        * =================================================
        */
 
@@ -121,7 +118,7 @@ export class AppController {
 
       /*
        * =================================================
-       * DATOS DEL EVENTO
+       * DATOS DE LA ORDEN
        * =================================================
        */
 
@@ -146,9 +143,8 @@ export class AppController {
              * 1. IDEMPOTENCIA
              * =============================================
              *
-             * Usamos event.eventId.
-             *
-             * NO usamos order.id.
+             * Verificamos si este eventId
+             * ya fue procesado.
              */
 
             const processedEvent =
@@ -159,11 +155,6 @@ export class AppController {
                 },
               });
 
-
-            /*
-             * Si ya existe significa que RabbitMQ
-             * nos entregó nuevamente el mismo evento.
-             */
 
             if (
               processedEvent
@@ -183,7 +174,7 @@ export class AppController {
 
             /*
              * =============================================
-             * 2. BUSCAR EVENTO + FOR UPDATE
+             * 2. BUSCAR EVENTO + ROW LOCK
              * =============================================
              */
 
@@ -199,10 +190,6 @@ export class AppController {
                 FOR UPDATE
               `;
 
-
-            /*
-             * El evento no existe.
-             */
 
             if (
               events.length === 0
@@ -240,9 +227,6 @@ export class AppController {
 
               /*
                * Registramos el evento como procesado.
-               *
-               * Así no procesamos nuevamente
-               * el mismo order.created.
                */
 
               await tx.processedEvent.create({
@@ -254,6 +238,64 @@ export class AppController {
                     event.eventType,
                 },
               });
+
+
+              /*
+               * ===========================================
+               * CREAR OUTBOX inventory.rejected
+               * ===========================================
+               */
+
+              const outboxEventId =
+                crypto.randomUUID();
+
+
+              const inventoryRejectedEvent = {
+                eventId:
+                  outboxEventId,
+
+                eventType:
+                  'inventory.rejected',
+
+                version: 1,
+
+                occurredAt:
+                  new Date().toISOString(),
+
+                data: {
+                  orderId:
+                    order.id,
+
+                  quantity:
+                    order.quantity,
+
+                  reason:
+                    'INSUFFICIENT_STOCK',
+                },
+              };
+
+
+              await tx.outboxEvent.create({
+                data: {
+                  eventId:
+                    outboxEventId,
+
+                  eventType:
+                    'inventory.rejected',
+
+                  payload:
+                    inventoryRejectedEvent,
+
+                  status:
+                    'PENDING',
+                },
+              });
+
+
+              console.log(
+                '📦 OutboxEvent creado:',
+                outboxEventId,
+              );
 
 
               return {
@@ -325,7 +367,7 @@ export class AppController {
 
             /*
              * =============================================
-             * 6. REGISTRAR PROCESSED EVENT
+             * 6. PROCESSED EVENT
              * =============================================
              */
 
@@ -342,20 +384,13 @@ export class AppController {
 
             /*
              * =============================================
-             * 7. CREAR OUTBOX EVENT
+             * 7. OUTBOX inventory.reserved
              * =============================================
              */
 
             const outboxEventId =
               crypto.randomUUID();
 
-
-            /*
-             * Creamos el envelope COMPLETO.
-             *
-             * Este es el evento que eventualmente
-             * viajará por RabbitMQ.
-             */
 
             const inventoryReservedEvent = {
               eventId:
@@ -411,9 +446,6 @@ export class AppController {
              * =============================================
              * TRANSACTION OK
              * =============================================
-             *
-             * Al salir de esta función Prisma
-             * hará COMMIT.
              */
 
             return {
@@ -468,38 +500,17 @@ export class AppController {
        * =====================================================
        * STOCK INSUFICIENTE
        * =====================================================
+       *
+       * El evento inventory.rejected YA está
+       * guardado en Outbox.
        */
 
       if (
         !result.success
       ) {
         console.log(
-          '❌ Publicando inventory.rejected',
+          '❌ inventory.rejected guardado en Outbox',
         );
-
-
-        /*
-         * TEMPORALMENTE lo publicamos directamente.
-         *
-         * Más adelante también lo pasaremos
-         * por Outbox.
-         */
-
-        this.rabbitmqPublisher.publish(
-          'inventory.rejected',
-
-          {
-            orderId:
-              order.id,
-
-            quantity:
-              order.quantity,
-
-            reason:
-              result.reason,
-          },
-        );
-
 
         channel.ack(
           message,
@@ -514,8 +525,8 @@ export class AppController {
        * RESERVA EXITOSA
        * =====================================================
        *
-       * inventory.reserved YA está guardado
-       * en outbox_events.
+       * inventory.reserved YA está
+       * guardado en Outbox.
        */
 
       console.log(
@@ -525,7 +536,7 @@ export class AppController {
 
 
       /*
-       * ACK del order.created.
+       * ACK DEL MENSAJE ORIGINAL
        */
 
       channel.ack(
@@ -542,16 +553,9 @@ export class AppController {
 
 
       /*
-       * Si algo falla dentro de la transaction:
+       * Si algo falla:
        *
-       * ROLLBACK.
-       *
-       * No queda:
-       *
-       * - stock descontado
-       * - Reservation
-       * - ProcessedEvent
-       * - OutboxEvent
+       * PostgreSQL hace ROLLBACK.
        */
 
       channel.nack(
