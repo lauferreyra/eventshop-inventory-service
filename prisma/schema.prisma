@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Event {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  unitPrice Decimal
+  stock     Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reservations Reservation[]
+
+  @@map("events")
+}
+
+model Reservation {
+  id        String   @id @default(uuid())
+  orderId   String
+  eventId   String
+  quantity  Int
+  status    ReservationStatus
+
+  createdAt DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id])
+
+  @@unique([orderId, eventId])
+  @@map("reservations")
+}
+
+enum ReservationStatus {
+  RESERVED
+  RELEASED
+}
