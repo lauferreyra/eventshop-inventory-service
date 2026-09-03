@@ -10,6 +10,14 @@ import { PrismaModule } from './prisma/prisma.module.js';
 
 import { OutboxModule } from './outbox/outbox.module.js';
 
+import {
+  EventsModule,
+} from './events/events.module.js';
+
+import {
+  RedisModule,
+} from './redis/redis.module.js';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -21,6 +29,8 @@ import { OutboxModule } from './outbox/outbox.module.js';
     PrismaModule,
 
     OutboxModule,
+    RedisModule,
+    EventsModule
   ],
 
   controllers: [

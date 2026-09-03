@@ -1,4 +1,4 @@
-import { Controller } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 
 import {
   Ctx,
@@ -70,7 +70,6 @@ export class AppController {
     private readonly rabbitmqPublisher:
       RabbitmqPublisherService,
   ) {}
-
 
   /*
    * =====================================================
