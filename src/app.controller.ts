@@ -263,7 +263,7 @@ export class AppController {
 
                 occurredAt:
                   new Date().toISOString(),
-
+                correlationId: event.correlationId,
                 data: {
                   orderId:
                     order.id,
@@ -405,7 +405,7 @@ export class AppController {
 
               occurredAt:
                 new Date().toISOString(),
-
+              correlationId: event.correlationId,
               data: {
                 orderId:
                   order.id,

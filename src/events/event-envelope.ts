@@ -3,5 +3,6 @@ export type EventEnvelope<T> = {
   eventType: string;
   version: number;
   occurredAt: string;
+  correlationId: string;
   data: T;
 };
