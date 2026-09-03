@@ -1,65 +1,25 @@
-
 import {
   Controller,
   Get,
-  HttpException,
-  HttpStatus,
-  Param,
+  UseGuards,
 } from '@nestjs/common';
 
-import { RateLimitService } from './rate-limit.service.js';
+import { RateLimit } from './rate-limit.decorator.js';
+import { RateLimitGuard } from './rate-limit.guard.js';
 
 @Controller('rate-limit')
 export class RateLimitController {
-  constructor(
-    private readonly rateLimitService:
-      RateLimitService,
-  ) {}
 
   @Get(':identifier')
-  async check(
-    @Param('identifier')
-    identifier: string,
-  ) {
-    const result =
-      await this.rateLimitService.check(
-        identifier,
-        5,
-        60,
-      );
-
-    /*
-     * =====================================================
-     * RATE LIMIT SUPERADO
-     * =====================================================
-     */
-
-    if (!result.allowed) {
-      throw new HttpException(
-        {
-          message:
-            'Too many requests',
-
-          limit:
-            result.limit,
-
-          remaining:
-            result.remaining,
-
-          retryAfter:
-            result.ttl,
-        },
-
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
-
-    /*
-     * =====================================================
-     * REQUEST PERMITIDO
-     * =====================================================
-     */
-
-    return result;
+  @UseGuards(RateLimitGuard)
+   @RateLimit({
+    limit: 5,
+    windowSeconds: 60,
+  })
+  async check() {
+    return {
+      success: true,
+      message: 'Request allowed',
+    };
   }
 }

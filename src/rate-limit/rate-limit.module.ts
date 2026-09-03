@@ -6,6 +6,7 @@ import { RedisModule } from '../redis/redis.module.js';
 import { RateLimitService } from './rate-limit.service.js';
 
 import { RateLimitController } from './rate-limit.controller.js';   
+import { RateLimitGuard } from './rate-limit.guard.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { RateLimitController } from './rate-limit.controller.js';
 
   providers: [
     RateLimitService,
+    RateLimitGuard
   ],
   exports: [
     RateLimitService,
