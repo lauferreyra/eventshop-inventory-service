@@ -15,12 +15,6 @@ export class RedisService
 {
   private redis!: Redis;
 
-  /*
-   * =====================================================
-   * CONEXIÓN
-   * =====================================================
-   */
-
   async onModuleInit() {
     this.redis = new Redis({
       host: 'localhost',
@@ -110,7 +104,35 @@ export class RedisService
 
   /*
    * =====================================================
-   * CERRAR CONEXIÓN
+   * EVAL - LUA SCRIPT
+   * =====================================================
+   *
+   * Ejecuta un script Lua directamente en Redis.
+   *
+   * keys:
+   *   Son las KEYS[] que recibe Lua.
+   *
+   * args:
+   *   Son los ARGV[] que recibe Lua.
+   *
+   */
+
+  async eval(
+    script: string,
+    keys: string[],
+    args: string[],
+  ): Promise<unknown> {
+    return this.redis.eval(
+      script,
+      keys.length,
+      ...keys,
+      ...args,
+    );
+  }
+
+  /*
+   * =====================================================
+   * DESTROY
    * =====================================================
    */
 

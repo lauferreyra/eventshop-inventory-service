@@ -18,6 +18,8 @@ import {
   RedisModule,
 } from './redis/redis.module.js';
 
+import { RateLimitModule } from './rate-limit/rate-limit.module.js';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -30,7 +32,8 @@ import {
 
     OutboxModule,
     RedisModule,
-    EventsModule
+    EventsModule,
+    RateLimitModule
   ],
 
   controllers: [
