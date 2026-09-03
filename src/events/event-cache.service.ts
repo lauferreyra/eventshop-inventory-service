@@ -1,15 +1,8 @@
-import {
-  Injectable,
-} from '@nestjs/common';
 
-import {
-  PrismaService,
-} from '../prisma/prisma.service.js';
+import { Injectable } from '@nestjs/common';
 
-import {
-  RedisService,
-} from '../redis/redis.service.js';
-
+import { PrismaService } from '../prisma/prisma.service.js';
+import { RedisService } from '../redis/redis.service.js';
 
 type CachedEvent = {
   id: string;
@@ -18,99 +11,50 @@ type CachedEvent = {
   stock: number;
 };
 
-
 @Injectable()
 export class EventCacheService {
-
-  /*
-   * TTL del cache.
-   *
-   * 60 segundos.
-   */
-
-  private readonly ttl =
-    60;
-
+  private readonly ttl = 60;
 
   constructor(
-    private readonly prisma:
-      PrismaService,
-
-    private readonly redis:
-      RedisService,
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
   ) {}
-
-
-  /*
-   * =====================================================
-   * GET EVENT
-   * =====================================================
-   */
 
   async getEvent(
     name: string,
   ): Promise<CachedEvent | null> {
+    const key = this.buildKey(name);
 
     /*
-     * ===================================================
-     * 1. CONSTRUIR KEY
-     * ===================================================
+     * 1. Intentamos obtener el evento desde Redis.
      */
-
-    const key =
-      this.buildKey(name);
-
-
-    /*
-     * ===================================================
-     * 2. BUSCAR EN REDIS
-     * ===================================================
-     */
-
     const cached =
-      await this.redis.get(
-        key,
-      );
-
-
-    /*
-     * ===================================================
-     * CACHE HIT
-     * ===================================================
-     */
+      await this.redis.get(key);
 
     if (cached) {
-
       console.log(
         '🟢 Redis CACHE HIT:',
         key,
       );
-
 
       return JSON.parse(
         cached,
       ) as CachedEvent;
     }
 
-
     /*
-     * ===================================================
-     * CACHE MISS
-     * ===================================================
+     * 2. No existe en Redis.
+     *
+     * Esto es un CACHE MISS.
      */
-
     console.log(
       '🟡 Redis CACHE MISS:',
       key,
     );
 
-
     /*
-     * ===================================================
-     * 3. BUSCAR EN POSTGRESQL
-     * ===================================================
+     * 3. Buscamos el evento en PostgreSQL.
      */
-
     const event =
       await this.prisma.event.findUnique({
         where: {
@@ -118,97 +62,77 @@ export class EventCacheService {
         },
       });
 
-
     if (!event) {
-
       return null;
     }
 
-
     /*
-     * ===================================================
-     * 4. CONVERTIR DECIMAL
-     * ===================================================
+     * 4. Preparamos el objeto que vamos
+     *    a guardar en Redis.
      */
-
-    const cachedEvent:
-      CachedEvent = {
-
-      id:
-        event.id,
-
-      name:
-        event.name,
-
-      unitPrice:
-        Number(
-          event.unitPrice,
-        ),
-
-      stock:
-        event.stock,
+    const cachedEvent: CachedEvent = {
+      id: event.id,
+      name: event.name,
+      unitPrice: Number(
+        event.unitPrice,
+      ),
+      stock: event.stock,
     };
 
-
     /*
-     * ===================================================
-     * 5. GUARDAR EN REDIS
-     * ===================================================
+     * 5. Guardamos el evento en Redis.
      */
-
     await this.redis.set(
       key,
-
-      JSON.stringify(
-        cachedEvent,
-      ),
+      JSON.stringify(cachedEvent),
     );
-
 
     /*
-     * ===================================================
-     * 6. ASIGNAR TTL
-     * ===================================================
+     * 6. Configuramos TTL.
+     *
+     * Después de 60 segundos Redis
+     * eliminará automáticamente la key.
      */
-
     await this.redis.expire(
       key,
-
       this.ttl,
     );
-
 
     console.log(
       '💾 Evento guardado en Redis:',
       key,
     );
 
-
     return cachedEvent;
   }
 
+  /*
+   * Elimina el evento de Redis.
+   *
+   * Esto se utiliza cuando sabemos que
+   * los datos almacenados en cache pueden
+   * haber quedado desactualizados.
+   */
+  async invalidateEvent(
+    name: string,
+  ): Promise<void> {
+    const key = this.buildKey(name);
+
+    await this.redis.delete(key);
+
+    console.log(
+      '🗑️ Cache invalidated:',
+      key,
+    );
+  }
 
   /*
-   * =====================================================
-   * BUILD KEY
-   * =====================================================
+   * Construye siempre la misma key
+   * para un determinado evento.
    */
-
   private buildKey(
     name: string,
   ): string {
-
     return `event:${name}`;
   }
-
-  async invalidateEvent(name: string): Promise<void> {
-  const key = this.buildKey(name);
-
-  await this.redis.delete(key);
-
-  console.log(
-    '🗑️ Cache invalidated:',
-    key,
-  );
-}
 }
