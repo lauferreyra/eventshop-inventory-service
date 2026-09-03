@@ -1,4 +1,5 @@
-import { Controller, Get } from '@nestjs/common';
+
+import { Controller } from '@nestjs/common';
 
 import {
   Ctx,
@@ -10,6 +11,8 @@ import {
 import { PrismaService } from './prisma/prisma.service.js';
 
 import { RabbitmqPublisherService } from './rabbitmq/rabbitmq-publisher.service.js';
+
+import { EventCacheService } from './events/event-cache.service.js';
 
 import type {
   OrderCreatedEnvelope,
@@ -69,6 +72,9 @@ export class AppController {
 
     private readonly rabbitmqPublisher:
       RabbitmqPublisherService,
+
+    private readonly eventCacheService:
+      EventCacheService,
   ) {}
 
   /*
@@ -141,9 +147,6 @@ export class AppController {
              * =============================================
              * 1. IDEMPOTENCIA
              * =============================================
-             *
-             * Verificamos si este eventId
-             * ya fue procesado.
              */
 
             const processedEvent =
@@ -431,8 +434,8 @@ export class AppController {
 
                 status:
                   'PENDING',
-              },
-            });
+                },
+              });
 
 
             console.log(
@@ -499,9 +502,6 @@ export class AppController {
        * =====================================================
        * STOCK INSUFICIENTE
        * =====================================================
-       *
-       * El evento inventory.rejected YA está
-       * guardado en Outbox.
        */
 
       if (
@@ -523,9 +523,6 @@ export class AppController {
        * =====================================================
        * RESERVA EXITOSA
        * =====================================================
-       *
-       * inventory.reserved YA está
-       * guardado en Outbox.
        */
 
       console.log(
@@ -535,7 +532,26 @@ export class AppController {
 
 
       /*
+       * =====================================================
+       * INVALIDAR CACHE
+       * =====================================================
+       *
+       * La transaction de PostgreSQL ya hizo COMMIT.
+       *
+       * El stock real ya fue actualizado.
+       *
+       * Ahora eliminamos la copia vieja de Redis.
+       */
+
+      await this.eventCacheService.invalidateEvent(
+        result.event.name,
+      );
+
+
+      /*
+       * =====================================================
        * ACK DEL MENSAJE ORIGINAL
+       * =====================================================
        */
 
       channel.ack(
