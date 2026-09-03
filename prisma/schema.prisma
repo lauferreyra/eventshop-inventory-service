@@ -8,37 +8,28 @@ datasource db {
 }
 
 model Event {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  unitPrice Decimal
-  stock     Int
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  id           String        @id @default(uuid())
+  name         String        @unique
+  unitPrice    Decimal
+  stock        Int
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   reservations Reservation[]
 
   @@map("events")
 }
 
 model Reservation {
-  id        String   @id @default(uuid())
+  id        String            @id @default(uuid())
   orderId   String
   eventId   String
   quantity  Int
   status    ReservationStatus
-
-  createdAt DateTime @default(now())
-
-  event Event @relation(fields: [eventId], references: [id])
+  createdAt DateTime          @default(now())
+  event     Event             @relation(fields: [eventId], references: [id])
 
   @@unique([orderId, eventId])
   @@map("reservations")
-}
-
-enum ReservationStatus {
-  RESERVED
-  RELEASED
 }
 
 model OutboxEvent {
@@ -48,16 +39,10 @@ model OutboxEvent {
   payload      Json
   status       OutboxStatus @default(PENDING)
   createdAt    DateTime     @default(now())
-  processingAt DateTime?
   publishedAt  DateTime?
+  processingAt DateTime?
 
   @@map("outbox_events")
-}
-
-enum OutboxStatus {
-  PENDING
-  PROCESSING
-  PUBLISHED
 }
 
 model ProcessedEvent {
@@ -67,4 +52,15 @@ model ProcessedEvent {
   createdAt DateTime @default(now())
 
   @@map("processed_events")
+}
+
+enum ReservationStatus {
+  RESERVED
+  RELEASED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  PROCESSING
 }

@@ -15,6 +15,11 @@ export class EventsController {
     private readonly eventCacheService: EventCacheService,
   ) {}
 
+  @Get()
+  async findAll() {
+    return this.eventCacheService.getEvents();
+  }
+
   /*
    * Obtiene un evento.
    *

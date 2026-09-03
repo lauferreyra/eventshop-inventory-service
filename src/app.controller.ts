@@ -547,7 +547,7 @@ export class AppController {
         result.event.name,
       );
 
-
+      await this.eventCacheService.invalidateEvents();
       /*
        * =====================================================
        * ACK DEL MENSAJE ORIGINAL
