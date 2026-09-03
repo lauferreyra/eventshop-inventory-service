@@ -15,16 +15,21 @@ export class RedisService
 {
   private redis!: Redis;
 
-  async onModuleInit() {
+   async onModuleInit() {
     this.redis = new Redis({
-      host: 'localhost',
-      port: 6379,
+      host:
+        process.env.REDIS_HOST ??
+        'localhost',
+
+      port:
+        Number(
+          process.env.REDIS_PORT ??
+            6379,
+        ),
     });
 
-    await this.redis.ping();
-
     console.log(
-      '✅ Redis conectado',
+      `✅ Redis conectado a ${process.env.REDIS_HOST ?? 'localhost'}:${process.env.REDIS_PORT ?? 6379}`,
     );
   }
 
