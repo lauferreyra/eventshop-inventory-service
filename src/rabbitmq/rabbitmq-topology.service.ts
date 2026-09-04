@@ -58,6 +58,12 @@ export class RabbitmqTopologyService
       'eventshop.events',
       'order.created',
     );
+
+    await this.channel.bindQueue(
+      'inventory_queue',
+      'eventshop.events',
+      'inventory.release',
+    );
   }
 
   async onModuleDestroy() {

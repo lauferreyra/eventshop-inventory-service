@@ -16,6 +16,7 @@ import { EventCacheService } from './events/event-cache.service.js';
 
 import type {
   OrderCreatedEnvelope,
+  InventoryReleaseEnvelope
 } from './events/events.js';
 
 /*
@@ -582,4 +583,187 @@ export class AppController {
       );
     }
   }
+
+  @EventPattern('inventory.release')
+async handleInventoryRelease(
+  @Payload()
+  event: InventoryReleaseEnvelope,
+
+  @Ctx()
+  context: any,
+) {
+  const rmqContext =
+    context as RmqContext;
+
+  const channel =
+    rmqContext.getChannelRef();
+
+  const message =
+    rmqContext.getMessage();
+
+  try {
+    console.log(
+      '🔄 Inventory recibió inventory.release',
+    );
+
+    const result =
+      await this.prisma.$transaction(
+        async (tx) => {
+          /*
+           * 1. IDEMPOTENCIA
+           */
+
+          const processedEvent =
+            await tx.processedEvent.findUnique({
+              where: {
+                eventId: event.eventId,
+              },
+            });
+
+          if (processedEvent) {
+            console.log(
+              '♻️ inventory.release ya procesado:',
+              event.eventId,
+            );
+
+            return {
+              duplicate: true,
+            };
+          }
+
+          /*
+           * 2. BUSCAR RESERVATION
+           */
+
+          const reservation =
+            await tx.reservation.findFirst({
+              where: {
+                orderId:
+                  event.data.orderId,
+              },
+              include: {
+                event: true,
+              },
+            });
+
+          if (!reservation) {
+            throw new Error(
+              `Reserva no encontrada para orderId: ${event.data.orderId}`,
+            );
+          }
+
+          /*
+           * 3. IDEMPOTENCIA DE NEGOCIO
+           *
+           * Si ya fue liberada, no volvemos
+           * a devolver stock.
+           */
+
+          if (
+            reservation.status ===
+            'RELEASED'
+          ) {
+            console.log(
+              '♻️ Reserva ya liberada:',
+              reservation.id,
+            );
+
+            await tx.processedEvent.create({
+              data: {
+                eventId:
+                  event.eventId,
+
+                eventType:
+                  event.eventType,
+              },
+            });
+
+            return {
+              duplicate: false,
+              alreadyReleased: true,
+            };
+          }
+
+          /*
+           * 4. DEVOLVER STOCK
+           */
+
+          const updatedEvent =
+            await tx.event.update({
+              where: {
+                id: reservation.eventId,
+              },
+
+              data: {
+                stock: {
+                  increment:
+                    reservation.quantity,
+                },
+              },
+            });
+
+          console.log(
+            '📦 Stock restaurado:',
+            updatedEvent.stock,
+          );
+
+          /*
+           * 5. CAMBIAR RESERVATION
+           */
+
+          await tx.reservation.update({
+            where: {
+              id: reservation.id,
+            },
+
+            data: {
+              status: 'RELEASED',
+            },
+          });
+
+          console.log(
+            '🔓 Reserva liberada:',
+            reservation.id,
+          );
+
+          /*
+           * 6. REGISTRAR EVENTO PROCESADO
+           */
+
+          await tx.processedEvent.create({
+            data: {
+              eventId:
+                event.eventId,
+
+              eventType:
+                event.eventType,
+            },
+          });
+
+          return {
+            duplicate: false,
+            alreadyReleased: false,
+          };
+        },
+      );
+
+    channel.ack(message);
+
+    console.log(
+      '✅ inventory.release procesado correctamente',
+      result,
+    );
+  } catch (error) {
+    console.error(
+      '❌ Error procesando inventory.release',
+      error,
+    );
+
+    channel.nack(
+      message,
+      false,
+      false,
+    );
+  }
+}
 }

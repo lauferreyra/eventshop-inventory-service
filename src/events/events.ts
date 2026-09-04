@@ -58,3 +58,16 @@ export type InventoryRejectedEvent = {
 
 export type InventoryRejectedEnvelope =
   EventEnvelope<InventoryRejectedEvent>;
+
+  /*
+ * =====================================================
+ * INVENTORY RELEASE
+ * =====================================================
+ */
+
+export type InventoryReleaseEvent = {
+  orderId: string;
+};
+
+export type InventoryReleaseEnvelope =
+  EventEnvelope<InventoryReleaseEvent>;
